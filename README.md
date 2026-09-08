@@ -16,7 +16,7 @@ Windows / Linux / macOS        GitHub                 Hosted macOS runner
                                                                  │
                                                Apple secrets set │ optional
                                                                  ▼
-                                                     Signed IPA → TestFlight
+                                                     Signed IPA → App Store Connect
 ```
 
 1. A developer edits the React Native code in [`App.tsx`](App.tsx) using any operating system.
@@ -24,7 +24,7 @@ Windows / Linux / macOS        GitHub                 Hosted macOS runner
 3. The `build` job requests `macos-latest`, a GitHub-hosted Mac with Xcode.
 4. The runner installs npm packages, Ruby gems, CocoaPods, and then builds the Release configuration with `xcodebuild`.
 5. The compiled simulator `.app` is zipped and uploaded as a GitHub Actions artifact for every successful build.
-6. A manually enabled `release` job imports Apple signing material, exports an IPA, and uploads it to TestFlight.
+6. A manually enabled `release` job imports Apple signing material, exports an IPA, and uploads it to App Store Connect for TestFlight testing or later App Store submission.
 
 The normal CI artifact is an **unsigned simulator build**. It proves that Xcode compiled the native iOS application and can be installed in an iOS Simulator. Apple does not allow that artifact to run directly on a physical iPhone. The optional release job creates the signed device IPA.
 
@@ -78,11 +78,17 @@ Running the iOS Simulator or compiling the native iOS target locally still requi
 4. Watch the **Build unsigned iOS app** job show the Xcode version, install CocoaPods, and compile the project.
 5. Download `CrossPlatformIOS-simulator-<commit>` from the run's **Artifacts** section.
 
-You can also choose **Run workflow** to start the same build manually. Leave **Build a signed IPA and upload it to TestFlight** disabled for the credential-free demonstration.
+You can also choose **Run workflow** to start the same build manually. Leave **Upload a signed IPA to App Store Connect without submitting for review** disabled for the credential-free demonstration.
 
-## Optional TestFlight release
+## Optional App Store Connect upload
 
-TestFlight requires an active Apple Developer Program membership, an App Store Connect app record, a unique bundle identifier, and distribution credentials. Create a protected GitHub environment named `app-store`, then add these environment secrets:
+The workflow has one optional upload checkbox, `upload_to_app_store_connect`. It defaults to disabled. When enabled for a manual run, the release job signs a device IPA and uploads it to App Store Connect after the unsigned build passes.
+
+The same uploaded build can be used for TestFlight testing and App Store submission. You choose those next steps in App Store Connect after Apple processes the upload. The workflow does not assign TestFlight groups, submit for App Review, or publish the app.
+
+### Configure Apple credentials
+
+Uploading requires an active Apple Developer Program membership, an App Store Connect app record, a unique bundle identifier, and distribution credentials. Create a protected GitHub environment named `app-store`, then add these environment secrets:
 
 | Secret                              | Value                                                         |
 | ----------------------------------- | ------------------------------------------------------------- |
@@ -112,16 +118,35 @@ On Windows PowerShell:
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("AuthKey_ABC1234567.p8"))
 ```
 
-When all secrets are configured, open **Actions → iOS build → Run workflow**, enable the TestFlight option, and start the run. The unsigned build must succeed first; then the release job signs the app, uploads it to App Store Connect, and preserves the IPA as a second artifact.
-
 For safer production use, add required reviewers to the `app-store` environment and rotate credentials regularly. Never commit certificates, profiles, passwords, or API keys to the repository.
+
+### Run the upload
+
+1. Open **Actions**, select **iOS build**, then choose **Run workflow**.
+2. Select the branch to build.
+3. Enable **Upload a signed IPA to App Store Connect without submitting for review**.
+4. Start the workflow and wait for the unsigned build to pass. Approve the environment deployment if required.
+5. Check that **Sign and upload to App Store Connect** succeeds. Download `CrossPlatformIOS-AppStoreConnect-<run number>` from the run's artifacts if you need a copy of the IPA.
+6. Open the app in [App Store Connect](https://appstoreconnect.apple.com/) and wait for Apple to process the build.
+
+The archive uses `github.run_number` as its build number. Rerunning the same workflow run keeps that number, so start a new manual run for a new upload. Check the app version and build number against existing uploads before releasing.
+
+### Test with TestFlight
+
+After processing finishes, open the app's TestFlight tab, complete any required compliance information, and make the build available to your test group. External testing may require Beta App Review. Testers install the app through TestFlight on their devices.
+
+### Submit to the App Store
+
+Uploading is not publishing. To release on the App Store, create or open the matching iOS app version in App Store Connect and select the processed build. Complete the required screenshots, description, privacy details, age rating, review information, and compliance questions. Set pricing, availability, and the release method, then submit for App Review. Apple must approve the submission before the app can be released. Submission and public release remain manual.
+
+See Apple's [upload guidance](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds/) for how one uploaded build supports testing and App Store submission.
 
 ## Project map
 
 | Path                                                     | Purpose                                                   |
 | -------------------------------------------------------- | --------------------------------------------------------- |
 | [`App.tsx`](App.tsx)                                     | Simple interactive React Native demonstration UI          |
-| [`.github/workflows/ios.yml`](.github/workflows/ios.yml) | macOS/Xcode build, artifact, and optional TestFlight jobs |
+| [`.github/workflows/ios.yml`](.github/workflows/ios.yml) | macOS/Xcode build and optional Apple upload               |
 | [`ios/`](ios)                                            | Native Xcode project and CocoaPods definition             |
 | [`__tests__/App.test.tsx`](__tests__/App.test.tsx)       | Basic render test run before Xcode builds                 |
 

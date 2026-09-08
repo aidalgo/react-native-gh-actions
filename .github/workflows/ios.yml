@@ -1,22 +1,26 @@
 name: iOS build
 
+# Pushes and pull requests only build. Manual runs can also upload to Apple.
 on:
   push:
     branches: ['**']
   pull_request:
   workflow_dispatch:
     inputs:
-      release_to_testflight:
-        description: Build a signed IPA and upload it to TestFlight
+      upload_to_app_store_connect:
+        description: Upload a signed IPA to App Store Connect without submitting for review
         required: true
         default: false
         type: boolean
 
+# A newer run replaces any in-progress iOS run for the same Git ref.
 concurrency:
   group: ios-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # This job needs no Apple signing secrets. Its output runs in the simulator,
+  # not on a physical iPhone or through TestFlight.
   build:
     name: Build unsigned iOS app
     runs-on: macos-latest
@@ -32,6 +36,7 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Bundler installs and caches the Ruby tools, including CocoaPods and xcpretty.
       - name: Use Ruby with Bundler cache
         uses: ruby/setup-ruby@v1
         with:
@@ -45,6 +50,7 @@ jobs:
       - name: Run JavaScript checks
         run: npm run verify
 
+      # CocoaPods installs the native dependencies used by the Xcode workspace.
       - name: Install iOS dependencies
         working-directory: ios
         run: bundle exec pod install
@@ -52,6 +58,8 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      # Compile a Release build without signing. pipefail preserves Xcode failures
+      # even though xcpretty formats the build output.
       - name: Build for the iOS Simulator
         run: |
           set -o pipefail
@@ -64,6 +72,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build | bundle exec xcpretty
 
+      # Zip the .app bundle so it can be downloaded intact from the workflow run.
       - name: Package compiled application
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
@@ -78,12 +87,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Only an explicitly requested manual release reaches this job, after build passes.
   release:
-    name: Sign and upload to TestFlight
-    if: github.event_name == 'workflow_dispatch' && inputs.release_to_testflight
+    name: Sign and upload to App Store Connect
+    if: github.event_name == 'workflow_dispatch' && inputs.upload_to_app_store_connect
     needs: build
     runs-on: macos-latest
     timeout-minutes: 45
+    # Use secrets and any approval rules configured on the app-store environment.
     environment: app-store
 
     steps:
@@ -103,12 +114,14 @@ jobs:
           bundler: '4.0.16'
           bundler-cache: true
 
+      # This job uses a fresh runner, so it must install its own dependencies.
       - name: Install dependencies
         run: |
           npm ci
           cd ios
           bundle exec pod install
 
+      # Stop before signing if a required secret is missing. Never print its value.
       - name: Validate Apple configuration
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
@@ -139,6 +152,8 @@ jobs:
             fi
           done
 
+      # Decode the signing files and import the certificate into a temporary keychain.
+      # The provisioning profile ties the app to the Apple team and signing certificate.
       - name: Install signing certificate and profile
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
@@ -163,6 +178,8 @@ jobs:
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/build.mobileprovision"
 
+      # Build a separate device archive with manual signing. The workflow run number
+      # becomes the app's build number. Rerunning the same run keeps that number.
       - name: Archive signed application
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -183,6 +200,8 @@ jobs:
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             archive | bundle exec xcpretty
 
+      # Export the archive as an App Store IPA. The plist maps the bundle ID to
+      # the provisioning profile Xcode must use for signing.
       - name: Export signed IPA
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -205,15 +224,18 @@ jobs:
             -exportPath "$RUNNER_TEMP/export" \
             -exportOptionsPlist "$EXPORT_OPTIONS"
 
+      # Keep a downloadable copy in GitHub Actions before attempting the Apple upload.
       - name: Publish signed IPA
         uses: actions/upload-artifact@v4
         with:
-          name: CrossPlatformIOS-TestFlight-${{ github.run_number }}
+          name: CrossPlatformIOS-AppStoreConnect-${{ github.run_number }}
           path: ${{ runner.temp }}/export/CrossPlatformIOS.ipa
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload IPA to TestFlight
+      # Apple processes this build for TestFlight or App Store submission.
+      # Uploading does not submit it for review or publish it on the App Store.
+      - name: Upload IPA to App Store Connect
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
@@ -230,6 +252,7 @@ jobs:
             --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
             --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
 
+      # Attempt cleanup even if signing, export, or upload fails.
       - name: Remove signing material
         if: always()
         env:
